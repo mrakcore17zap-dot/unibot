@@ -1,23 +1,23 @@
 import os
 import re
-import asyncio
 from datetime import datetime, timedelta
 import pytz
 import requests
 from bs4 import BeautifulSoup
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from flask import Flask
 import threading
 
 # ===== КОНФИГУРАЦИЯ =====
 TOKEN = os.getenv("TELEGRAM_TOKEN", "8778485093:AAEwSgzfZP4HbXZ2eUfoTvKEvBgdw7mhe9A")
 YOUR_CHAT_ID = 1356969534
-
 FACULTY = "1012"
 COURSE = "1"
 GROUP = "ТП-1-11"
+
+# URL твоего бота на Render (измени, если имя другое)
+RENDER_URL = "https://unibot-85cq.onrender.com"
 
 # ===== ПАРСИНГ (исправленный) =====
 def get_schedule_for_date(date_str: str) -> list:
@@ -43,43 +43,29 @@ def get_schedule_for_date(date_str: str) -> list:
         return None
 
     soup = BeautifulSoup(resp.text, 'html.parser')
-    
-    # Ищем все блоки col-md-6
     day_blocks = soup.find_all('div', class_='col-md-6')
     schedule = []
-    
     for block in day_blocks:
         h4 = block.find('h4')
         if h4 and date_str in h4.get_text():
-            # Нашли нужный день, ищем таблицу внутри блока
             table = block.find('table', class_='table')
             if not table:
-                print(f"[ПАРСИНГ] Таблица не найдена в блоке с датой {date_str}")
                 continue
-            
             rows = table.find_all('tr')
             for row in rows:
                 tds = row.find_all('td')
                 if len(tds) < 3:
                     continue
-                # Пропускаем пустые строки
                 if not tds[2].get_text(strip=True):
                     continue
-                
                 num = tds[0].get_text(strip=True)
                 time_raw = tds[1].get_text(strip=True).replace('\n', ' - ')
-                
-                # Ссылка на Zoom
                 zoom_link = None
                 link_tag = tds[2].find('a', href=True)
                 if link_tag:
                     zoom_link = link_tag['href']
-                
-                # Извлекаем текст ячейки
                 cell_text = tds[2].get_text(separator='\n').strip()
                 lines = [line.strip() for line in cell_text.split('\n') if line.strip()]
-                
-                # Определяем предмет и преподавателя
                 subject = ''
                 teacher = ''
                 for line in lines:
@@ -88,16 +74,11 @@ def get_schedule_for_date(date_str: str) -> list:
                     if not subject:
                         subject = line
                     else:
-                        if teacher:
-                            teacher += ', ' + line
-                        else:
-                            teacher = line
-                
+                        teacher = line if not teacher else teacher + ', ' + line
                 if not subject and lines:
                     subject = lines[0]
                 if not teacher and len(lines) > 1:
                     teacher = lines[1]
-                
                 schedule.append({
                     'num': num,
                     'time': time_raw,
@@ -105,25 +86,19 @@ def get_schedule_for_date(date_str: str) -> list:
                     'teacher': teacher,
                     'zoom': zoom_link
                 })
-            
-            # После обработки найденного дня прерываем цикл
             break
-    
     print(f"[ПАРСИНГ] Найдено пар: {len(schedule)}")
     return schedule if schedule else []
 
-# ===== ФОРМИРОВАНИЕ СООБЩЕНИЯ =====
 def format_schedule(schedule: list, date_str: str) -> str:
     if not schedule:
         return f"📅 На {date_str} занятий нет или расписание не найдено."
-
     try:
         dt = datetime.strptime(date_str, "%d.%m.%Y")
         weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
         dow = weekdays[dt.weekday()]
     except:
         dow = ""
-
     text = f"📅 *{date_str} ({dow})*\n\n"
     for item in schedule:
         text += f"🔹 *{item['num']} пара*  ({item['time']})\n"
@@ -150,14 +125,13 @@ async def tomorrow_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.message.reply_text("⏳ Загружаю расписание...")
-    
     kyiv_tz = pytz.timezone('Europe/Kiev')
     tomorrow = (datetime.now(kyiv_tz) + timedelta(days=1)).strftime("%d.%m.%Y")
     schedule = get_schedule_for_date(tomorrow)
     text = format_schedule(schedule, tomorrow)
     await query.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ===== АВТОНАПОМИНАНИЕ =====
+# ===== АВТОНАПОМИНАНИЕ (используем asyncio) =====
 async def send_daily_schedule(app: Application):
     kyiv_tz = pytz.timezone('Europe/Kiev')
     tomorrow = (datetime.now(kyiv_tz) + timedelta(days=1)).strftime("%d.%m.%Y")
@@ -165,32 +139,46 @@ async def send_daily_schedule(app: Application):
     text = format_schedule(schedule, tomorrow)
     await app.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ===== ВЕБ-СЕРВЕР ДЛЯ RENDER =====
-app_web = Flask(__name__)
+# ===== НАСТРОЙКА WEBHOOK =====
+app = Application.builder().token(TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
 
-@app_web.route('/')
-def health_check():
+# Планировщик для автоуведомлений
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+scheduler = AsyncIOScheduler()
+scheduler.add_job(send_daily_schedule, "cron", hour=20, minute=0, args=[app])
+scheduler.start()
+
+# ===== FLASK ДЛЯ ПРИЁМА WEBHOOK =====
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def health():
     return "Bot is running!"
 
-def run_web():
-    app_web.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+@flask_app.route('/webhook', methods=['POST'])
+async def webhook():
+    """Принимаем обновления от Telegram"""
+    json_data = request.get_json(force=True)
+    update = Update.de_json(json_data, app.bot)
+    await app.process_update(update)
+    return "ok"
+
+@flask_app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    """Устанавливаем webhook (вызови один раз вручную)"""
+    webhook_url = f"{RENDER_URL}/webhook"
+    response = requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
+    return response.json()
 
 # ===== ЗАПУСК =====
-def main():
-    thread = threading.Thread(target=run_web)
-    thread.daemon = True
-    thread.start()
-
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
-
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(send_daily_schedule, "cron", hour=20, minute=0, args=[app])
-    scheduler.start()
-
-    print("Бот запущен...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-
 if __name__ == "__main__":
-    main()
+    # Удаляем старый webhook (на всякий случай)
+    requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
+    # Устанавливаем новый webhook
+    webhook_url = f"{RENDER_URL}/webhook"
+    requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
+    print(f"Webhook установлен на {webhook_url}")
+    # Запускаем Flask
+    flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
