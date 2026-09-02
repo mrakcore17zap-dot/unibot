@@ -1,40 +1,25 @@
 import os
-import asyncio
 import re
+import asyncio
 from datetime import datetime, timedelta
 
 import requests
 from bs4 import BeautifulSoup
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ===== КОНФИГУРАЦИЯ =====
-TOKEN = "8825040548:AAEzOeCHQT1zHFFPm8lixSd0C8Dwf2QMeI4"  # вставь свой токен от @BotFather
-YOUR_CHAT_ID = 1356969534  # вставь свой Telegram ID (узнай у @userinfobot)
+TOKEN = os.getenv("TELEGRAM_TOKEN", "8825040548:AAEzOeCHQT1zHFFPm8lixSd0C8Dwf2QMeI4")  # Если переменная не задана, используй запасной
+YOUR_CHAT_ID = 1356969534  # замени на свой Telegram ID
 
-# Параметры твоей группы (можно захардкодить или потом сделать через /setgroup)
+# Параметры твоей группы
 FACULTY = "1012"      # Навчально-науковий інститут економіки і управління
 COURSE = "1"          # твой курс
 GROUP = "ТП-1-11"     # твоя группа
 
-# ===== ИНИЦИАЛИЗАЦИЯ БОТА =====
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
-scheduler = AsyncIOScheduler()
-
-# ===== КЛАВИАТУРА =====
-keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📚 Расписание на завтра", callback_data="tomorrow")]
-])
-
-# ===== ФУНКЦИЯ ПАРСИНГА =====
+# ===== ФУНКЦИЯ ПАРСИНГА (без изменений) =====
 def get_schedule_for_date(date_str: str) -> list:
-    """
-    Получает расписание на указанную дату (в формате дд.мм.гггг).
-    Возвращает список занятий: [{'num': '1', 'time': '08:15-09:35', 'subject': '...', 'teacher': '...', 'zoom': 'https://...'}, ...]
-    """
     url = "https://nmu.nuft.edu.ua/timetable.cgi?n=700"
     payload = {
         'faculty': FACULTY,
@@ -51,13 +36,12 @@ def get_schedule_for_date(date_str: str) -> list:
 
     try:
         resp = requests.post(url, data=payload, headers=headers, timeout=15)
-        resp.encoding = 'windows-1251'  # сайт использует эту кодировку
+        resp.encoding = 'windows-1251'
     except Exception as e:
         print(f"Ошибка запроса: {e}")
         return None
 
     soup = BeautifulSoup(resp.text, 'html.parser')
-    # Ищем блок с нужной датой
     day_blocks = soup.find_all('div', class_='col-md-6')
     schedule = []
     for block in day_blocks:
@@ -71,29 +55,23 @@ def get_schedule_for_date(date_str: str) -> list:
                 tds = row.find_all('td')
                 if len(tds) < 3:
                     continue
-                # Проверяем, что ячейка с содержанием не пустая (не содержит только пробелы)
                 content_cell = tds[2]
                 if content_cell.get_text(strip=True) == '':
-                    continue  # пустая пара
+                    continue
 
                 num = tds[0].get_text(strip=True)
                 time_raw = tds[1].get_text(strip=True).replace('\n', ' - ')
-                # Извлекаем предмет, преподавателя и ссылку на Zoom
-                # Используем BeautifulSoup для поиска
-                # Сначала ищем ссылку на Zoom
+
                 zoom_link = None
                 link_tag = content_cell.find('a', href=True)
                 if link_tag:
                     zoom_link = link_tag['href']
 
-                # Получаем весь текст, разбиваем по <br>
-                # Заменяем <br> на разделитель, чтобы потом легко парсить
                 for br in content_cell.find_all('br'):
                     br.replace_with('\n')
                 text = content_cell.get_text(separator='\n')
                 lines = [line.strip() for line in text.split('\n') if line.strip()]
-                # Пример lines: ['онлайн', 'Основи підприємництва (ПрС)', 'доцент Бергер А.Д.', 'відеоконференсія', 'https://us04web.zoom.us/j/...']
-                # Ищем строку, которая содержит "онлайн" или "очно" – пропускаем
+
                 subject = ''
                 teacher = ''
                 for line in lines:
@@ -103,18 +81,14 @@ def get_schedule_for_date(date_str: str) -> list:
                         continue
                     if 'https://' in line or 'http://' in line:
                         continue
-                    # если строка не содержит подсказок, то это либо предмет, либо преподаватель
-                    # обычно предмет идёт первым, преподаватель вторым
                     if not subject:
                         subject = line
                     else:
-                        # если уже есть subject, то добавляем в teacher
                         if teacher:
                             teacher += ', ' + line
                         else:
                             teacher = line
 
-                # Если не удалось выделить subject/teacher, используем всю строку
                 if not subject and lines:
                     subject = lines[0] if len(lines) > 0 else ''
                 if not teacher and len(lines) > 1:
@@ -127,7 +101,7 @@ def get_schedule_for_date(date_str: str) -> list:
                     'teacher': teacher,
                     'zoom': zoom_link
                 })
-            break  # нашли нужный день
+            break
 
     return schedule if schedule else None
 
@@ -136,7 +110,6 @@ def format_schedule(schedule: list, date_str: str) -> str:
     if not schedule:
         return f"📅 На {date_str} занятий нет или расписание не найдено."
 
-    # Определяем день недели
     try:
         dt = datetime.strptime(date_str, "%d.%m.%Y")
         weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
@@ -156,38 +129,45 @@ def format_schedule(schedule: list, date_str: str) -> str:
     return text
 
 # ===== ОБРАБОТЧИКИ КОМАНД =====
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer(
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[InlineKeyboardButton("📚 Расписание на завтра", callback_data="tomorrow")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
         "👋 Привет! Я твой бот-расписание.\n"
         "Нажми кнопку ниже, чтобы узнать расписание на завтра.\n\n"
         "Также каждый вечер в 20:00 я буду присылать расписание автоматически.",
-        reply_markup=keyboard
+        reply_markup=reply_markup
     )
 
-@dp.callback_query(lambda c: c.data == "tomorrow")
-async def show_tomorrow(callback: types.CallbackQuery):
+async def tomorrow_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
     schedule = get_schedule_for_date(tomorrow)
     text = format_schedule(schedule, tomorrow)
-    await callback.message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
-    await callback.answer()
+    await query.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
 
 # ===== АВТОМАТИЧЕСКОЕ НАПОМИНАНИЕ =====
-async def send_daily_schedule():
+async def send_daily_schedule(app: Application):
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
     schedule = get_schedule_for_date(tomorrow)
     text = format_schedule(schedule, tomorrow)
-    await bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
-
-# Запуск планировщика – каждый день в 20:00
-scheduler.add_job(send_daily_schedule, "cron", hour=20, minute=0)
-scheduler.start()
+    await app.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
 # ===== ЗАПУСК БОТА =====
-async def main():
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
+
+    # Планировщик
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(send_daily_schedule, "cron", hour=20, minute=0, args=[app])
+    scheduler.start()
+
     print("Бот запущен...")
-    await dp.start_polling(bot)
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
