@@ -3,7 +3,6 @@ import re
 import asyncio
 from datetime import datetime, timedelta
 import pytz
-
 import requests
 from bs4 import BeautifulSoup
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -20,7 +19,7 @@ FACULTY = "1012"
 COURSE = "1"
 GROUP = "ТП-1-11"
 
-# ===== УЛУЧШЕННАЯ ФУНКЦИЯ ПАРСИНГА =====
+# ===== НОВАЯ ФУНКЦИЯ ПАРСИНГА (по таблице) =====
 def get_schedule_for_date(date_str: str) -> list:
     url = "https://nmu.nuft.edu.ua/timetable.cgi?n=700"
     payload = {
@@ -40,91 +39,88 @@ def get_schedule_for_date(date_str: str) -> list:
         resp = requests.post(url, data=payload, headers=headers, timeout=15)
         resp.encoding = 'windows-1251'
     except Exception as e:
-        print(f"Ошибка запроса: {e}")
+        print(f"[ПАРСИНГ] Ошибка запроса: {e}")
         return None
 
-    # Для отладки выведем первые 500 символов ответа в лог
-    print(f"Ответ сайта (первые 500 символов): {resp.text[:500]}")
-
     soup = BeautifulSoup(resp.text, 'html.parser')
-    schedule = []
+    
+    # Находим заголовок h4 с нашей датой
+    date_header = soup.find('h4', string=re.compile(date_str))
+    if not date_header:
+        # Попробуем найти по частичному совпадению
+        date_header = soup.find('h4', string=re.compile(date_str.replace('.', '\.')))
+    if not date_header:
+        print(f"[ПАРСИНГ] Заголовок с датой {date_str} не найден")
+        # Для отладки выведем первые 500 символов
+        print(f"[ПАРСИНГ] Ответ сайта (первые 500 символов): {resp.text[:500]}")
+        return None
 
-    # Ищем все блоки, которые содержат таблицу с расписанием
-    # Обычно это div с классом col-md-6, но на всякий случай ищем все таблицы
-    tables = soup.find_all('table', class_='table')
-    for table in tables:
-        # Проверяем, есть ли рядом заголовок с нашей датой
-        parent = table.find_parent()
-        # Ищем заголовок h4, содержащий нашу дату, в родительских элементах
-        header = None
-        for ancestor in table.parents:
-            h4 = ancestor.find('h4')
-            if h4 and date_str in h4.get_text():
-                header = h4
-                break
-        if not header:
+    # Ищем родительский div, который содержит таблицу
+    parent_div = date_header.find_parent('div', class_='col-md-6')
+    if not parent_div:
+        print("[ПАРСИНГ] Не найден контейнер col-md-6")
+        return None
+
+    table = parent_div.find('table', class_='table')
+    if not table:
+        print("[ПАРСИНГ] Таблица не найдена")
+        return None
+
+    schedule = []
+    rows = table.find_all('tr')
+    for row in rows:
+        tds = row.find_all('td')
+        if len(tds) < 3:
+            continue
+        # Пропускаем пустые строки
+        if not tds[2].get_text(strip=True):
             continue
 
-        rows = table.find_all('tr')
-        for row in rows:
-            tds = row.find_all('td')
-            if len(tds) < 3:
+        num = tds[0].get_text(strip=True)
+        time_raw = tds[1].get_text(strip=True).replace('\n', ' - ')
+
+        # Ищем ссылку
+        zoom_link = None
+        link_tag = tds[2].find('a', href=True)
+        if link_tag:
+            zoom_link = link_tag['href']
+
+        # Получаем текст без HTML
+        cell_text = tds[2].get_text(separator='\n').strip()
+        lines = [line.strip() for line in cell_text.split('\n') if line.strip()]
+
+        # Извлекаем предмет и преподавателя
+        subject = ''
+        teacher = ''
+        for line in lines:
+            if 'онлайн' in line or 'очно' in line or 'відеоконференсія' in line or 'https://' in line:
                 continue
-            content_cell = tds[2]
-            if content_cell.get_text(strip=True) == '':
-                continue
-
-            num = tds[0].get_text(strip=True)
-            time_raw = tds[1].get_text(strip=True).replace('\n', ' - ')
-
-            zoom_link = None
-            link_tag = content_cell.find('a', href=True)
-            if link_tag:
-                zoom_link = link_tag['href']
-
-            # Извлекаем предмет и преподавателя
-            # Удаляем все <br> и получаем текст
-            for br in content_cell.find_all('br'):
-                br.replace_with('\n')
-            text = content_cell.get_text(separator='\n')
-            lines = [line.strip() for line in text.split('\n') if line.strip()]
-
-            subject = ''
-            teacher = ''
-            for line in lines:
-                if 'онлайн' in line or 'очно' in line:
-                    continue
-                if 'відеоконференсія' in line:
-                    continue
-                if 'https://' in line or 'http://' in line:
-                    continue
-                if not subject:
-                    subject = line
+            if not subject:
+                subject = line
+            else:
+                if teacher:
+                    teacher += ', ' + line
                 else:
-                    if teacher:
-                        teacher += ', ' + line
-                    else:
-                        teacher = line
+                    teacher = line
 
-            # Если не удалось выделить, берём первую строку как предмет
-            if not subject and lines:
-                subject = lines[0]
-            if not teacher and len(lines) > 1:
-                teacher = lines[1]
+        # Если не удалось выделить, берём первую строку
+        if not subject and lines:
+            subject = lines[0]
+        if not teacher and len(lines) > 1:
+            teacher = lines[1]
 
-            schedule.append({
-                'num': num,
-                'time': time_raw,
-                'subject': subject,
-                'teacher': teacher,
-                'zoom': zoom_link
-            })
-        break  # берём только первую найденную таблицу с этой датой
+        schedule.append({
+            'num': num,
+            'time': time_raw,
+            'subject': subject,
+            'teacher': teacher,
+            'zoom': zoom_link
+        })
 
-    print(f"Найдено пар: {len(schedule)}")
-    return schedule if schedule else None
+    print(f"[ПАРСИНГ] Найдено пар: {len(schedule)}")
+    return schedule if schedule else []
 
-# ===== ФОРМИРОВАНИЕ СООБЩЕНИЯ (без изменений) =====
+# ===== ФОРМИРОВАНИЕ СООБЩЕНИЯ =====
 def format_schedule(schedule: list, date_str: str) -> str:
     if not schedule:
         return f"📅 На {date_str} занятий нет или расписание не найдено."
@@ -147,27 +143,32 @@ def format_schedule(schedule: list, date_str: str) -> str:
         text += "\n"
     return text
 
-# ===== ОБРАБОТЧИКИ КОМАНД =====
+# ===== ОБРАБОТЧИКИ =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("📚 Расписание на завтра", callback_data="tomorrow")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         "👋 Привет! Я твой бот-расписание.\n"
         "Нажми кнопку ниже, чтобы узнать расписание на завтра.\n\n"
-        "Также каждый вечер в 20:00 я буду присылать расписание автоматически.",
+        "Каждый вечер в 20:00 я буду присылать расписание автоматически.",
         reply_markup=reply_markup
     )
 
 async def tomorrow_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await query.answer()  # Сразу отвечаем, чтобы не истекло время
+    # Отправляем сообщение "Ищу..." (опционально)
+    await query.message.reply_text("⏳ Загружаю расписание...")
+
+    # Запускаем парсинг асинхронно, чтобы не блокировать
+    loop = asyncio.get_event_loop()
     kyiv_tz = pytz.timezone('Europe/Kiev')
     tomorrow = (datetime.now(kyiv_tz) + timedelta(days=1)).strftime("%d.%m.%Y")
-    schedule = get_schedule_for_date(tomorrow)
+    schedule = await loop.run_in_executor(None, get_schedule_for_date, tomorrow)
     text = format_schedule(schedule, tomorrow)
     await query.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ===== АВТОМАТИЧЕСКОЕ НАПОМИНАНИЕ =====
+# ===== АВТОНАПОМИНАНИЕ =====
 async def send_daily_schedule(app: Application):
     kyiv_tz = pytz.timezone('Europe/Kiev')
     tomorrow = (datetime.now(kyiv_tz) + timedelta(days=1)).strftime("%d.%m.%Y")
@@ -185,7 +186,7 @@ def health_check():
 def run_web():
     app_web.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
 
-# ===== ЗАПУСК БОТА =====
+# ===== ЗАПУСК =====
 def main():
     thread = threading.Thread(target=run_web)
     thread.daemon = True
@@ -204,4 +205,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
