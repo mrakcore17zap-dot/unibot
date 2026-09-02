@@ -2,23 +2,25 @@ import os
 import re
 import asyncio
 from datetime import datetime, timedelta
+import pytz  # добавил для работы с часовыми поясами
 
 import requests
 from bs4 import BeautifulSoup
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from flask import Flask  # для веб-сервера
+import threading
 
 # ===== КОНФИГУРАЦИЯ =====
-TOKEN = os.getenv("TELEGRAM_TOKEN", "8825040548:AAEzOeCHQT1zHFFPm8lixSd0C8Dwf2QMeI4")  # Если переменная не задана, используй запасной
-YOUR_CHAT_ID = 1356969534  # замени на свой Telegram ID
+TOKEN = os.getenv("TELEGRAM_TOKEN", "8825040548:AAEzOeCHQT1zHFFPm8lixSd0C8Dwf2QMeI4")
+YOUR_CHAT_ID = 1356969534
 
-# Параметры твоей группы
-FACULTY = "1012"      # Навчально-науковий інститут економіки і управління
-COURSE = "1"          # твой курс
-GROUP = "ТП-1-11"     # твоя группа
+FACULTY = "1012"
+COURSE = "1"
+GROUP = "ТП-1-11"
 
-# ===== ФУНКЦИЯ ПАРСИНГА (без изменений) =====
+# ===== ФУНКЦИЯ ПАРСИНГА =====
 def get_schedule_for_date(date_str: str) -> list:
     url = "https://nmu.nuft.edu.ua/timetable.cgi?n=700"
     payload = {
@@ -142,26 +144,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def tomorrow_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
+    # Используем Киевское время
+    kyiv_tz = pytz.timezone('Europe/Kiev')
+    tomorrow = (datetime.now(kyiv_tz) + timedelta(days=1)).strftime("%d.%m.%Y")
     schedule = get_schedule_for_date(tomorrow)
     text = format_schedule(schedule, tomorrow)
     await query.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
 
 # ===== АВТОМАТИЧЕСКОЕ НАПОМИНАНИЕ =====
 async def send_daily_schedule(app: Application):
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
+    kyiv_tz = pytz.timezone('Europe/Kiev')
+    tomorrow = (datetime.now(kyiv_tz) + timedelta(days=1)).strftime("%d.%m.%Y")
     schedule = get_schedule_for_date(tomorrow)
     text = format_schedule(schedule, tomorrow)
     await app.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
+# ===== ВЕБ-СЕРВЕР ДЛЯ RENDER (чтобы был порт) =====
+app_web = Flask(__name__)
+
+@app_web.route('/')
+def health_check():
+    return "Bot is running!"
+
+def run_web():
+    app_web.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+
 # ===== ЗАПУСК БОТА =====
 def main():
-    app = Application.builder().token(TOKEN).build()
+    # Запускаем веб-сервер в отдельном потоке
+    thread = threading.Thread(target=run_web)
+    thread.daemon = True
+    thread.start()
 
+    # Запускаем Telegram-бота
+    app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
 
-    # Планировщик
     scheduler = AsyncIOScheduler()
     scheduler.add_job(send_daily_schedule, "cron", hour=20, minute=0, args=[app])
     scheduler.start()
