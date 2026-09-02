@@ -19,7 +19,7 @@ FACULTY = "1012"
 COURSE = "1"
 GROUP = "ТП-1-11"
 
-# ===== НОВАЯ ФУНКЦИЯ ПАРСИНГА (по таблице) =====
+# ===== ПАРСИНГ (исправленный) =====
 def get_schedule_for_date(date_str: str) -> list:
     url = "https://nmu.nuft.edu.ua/timetable.cgi?n=700"
     payload = {
@@ -44,79 +44,71 @@ def get_schedule_for_date(date_str: str) -> list:
 
     soup = BeautifulSoup(resp.text, 'html.parser')
     
-    # Находим заголовок h4 с нашей датой
-    date_header = soup.find('h4', string=re.compile(date_str))
-    if not date_header:
-        # Попробуем найти по частичному совпадению
-        date_header = soup.find('h4', string=re.compile(date_str.replace('.', '\.')))
-    if not date_header:
-        print(f"[ПАРСИНГ] Заголовок с датой {date_str} не найден")
-        # Для отладки выведем первые 500 символов
-        print(f"[ПАРСИНГ] Ответ сайта (первые 500 символов): {resp.text[:500]}")
-        return None
-
-    # Ищем родительский div, который содержит таблицу
-    parent_div = date_header.find_parent('div', class_='col-md-6')
-    if not parent_div:
-        print("[ПАРСИНГ] Не найден контейнер col-md-6")
-        return None
-
-    table = parent_div.find('table', class_='table')
-    if not table:
-        print("[ПАРСИНГ] Таблица не найдена")
-        return None
-
+    # Ищем все блоки col-md-6
+    day_blocks = soup.find_all('div', class_='col-md-6')
     schedule = []
-    rows = table.find_all('tr')
-    for row in rows:
-        tds = row.find_all('td')
-        if len(tds) < 3:
-            continue
-        # Пропускаем пустые строки
-        if not tds[2].get_text(strip=True):
-            continue
-
-        num = tds[0].get_text(strip=True)
-        time_raw = tds[1].get_text(strip=True).replace('\n', ' - ')
-
-        # Ищем ссылку
-        zoom_link = None
-        link_tag = tds[2].find('a', href=True)
-        if link_tag:
-            zoom_link = link_tag['href']
-
-        # Получаем текст без HTML
-        cell_text = tds[2].get_text(separator='\n').strip()
-        lines = [line.strip() for line in cell_text.split('\n') if line.strip()]
-
-        # Извлекаем предмет и преподавателя
-        subject = ''
-        teacher = ''
-        for line in lines:
-            if 'онлайн' in line or 'очно' in line or 'відеоконференсія' in line or 'https://' in line:
+    
+    for block in day_blocks:
+        h4 = block.find('h4')
+        if h4 and date_str in h4.get_text():
+            # Нашли нужный день, ищем таблицу внутри блока
+            table = block.find('table', class_='table')
+            if not table:
+                print(f"[ПАРСИНГ] Таблица не найдена в блоке с датой {date_str}")
                 continue
-            if not subject:
-                subject = line
-            else:
-                if teacher:
-                    teacher += ', ' + line
-                else:
-                    teacher = line
-
-        # Если не удалось выделить, берём первую строку
-        if not subject and lines:
-            subject = lines[0]
-        if not teacher and len(lines) > 1:
-            teacher = lines[1]
-
-        schedule.append({
-            'num': num,
-            'time': time_raw,
-            'subject': subject,
-            'teacher': teacher,
-            'zoom': zoom_link
-        })
-
+            
+            rows = table.find_all('tr')
+            for row in rows:
+                tds = row.find_all('td')
+                if len(tds) < 3:
+                    continue
+                # Пропускаем пустые строки
+                if not tds[2].get_text(strip=True):
+                    continue
+                
+                num = tds[0].get_text(strip=True)
+                time_raw = tds[1].get_text(strip=True).replace('\n', ' - ')
+                
+                # Ссылка на Zoom
+                zoom_link = None
+                link_tag = tds[2].find('a', href=True)
+                if link_tag:
+                    zoom_link = link_tag['href']
+                
+                # Извлекаем текст ячейки
+                cell_text = tds[2].get_text(separator='\n').strip()
+                lines = [line.strip() for line in cell_text.split('\n') if line.strip()]
+                
+                # Определяем предмет и преподавателя
+                subject = ''
+                teacher = ''
+                for line in lines:
+                    if 'онлайн' in line or 'очно' in line or 'відеоконференсія' in line or 'https://' in line:
+                        continue
+                    if not subject:
+                        subject = line
+                    else:
+                        if teacher:
+                            teacher += ', ' + line
+                        else:
+                            teacher = line
+                
+                if not subject and lines:
+                    subject = lines[0]
+                if not teacher and len(lines) > 1:
+                    teacher = lines[1]
+                
+                schedule.append({
+                    'num': num,
+                    'time': time_raw,
+                    'subject': subject,
+                    'teacher': teacher,
+                    'zoom': zoom_link
+                })
+            
+            # После обработки найденного дня прерываем цикл
+            break
+    
     print(f"[ПАРСИНГ] Найдено пар: {len(schedule)}")
     return schedule if schedule else []
 
@@ -156,15 +148,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def tomorrow_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()  # Сразу отвечаем, чтобы не истекло время
-    # Отправляем сообщение "Ищу..." (опционально)
+    await query.answer()
     await query.message.reply_text("⏳ Загружаю расписание...")
-
-    # Запускаем парсинг асинхронно, чтобы не блокировать
-    loop = asyncio.get_event_loop()
+    
     kyiv_tz = pytz.timezone('Europe/Kiev')
     tomorrow = (datetime.now(kyiv_tz) + timedelta(days=1)).strftime("%d.%m.%Y")
-    schedule = await loop.run_in_executor(None, get_schedule_for_date, tomorrow)
+    schedule = get_schedule_for_date(tomorrow)
     text = format_schedule(schedule, tomorrow)
     await query.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
 
@@ -201,7 +190,7 @@ def main():
     scheduler.start()
 
     print("Бот запущен...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
