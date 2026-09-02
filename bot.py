@@ -2,14 +2,14 @@ import os
 import re
 import asyncio
 from datetime import datetime, timedelta
-import pytz  # добавил для работы с часовыми поясами
+import pytz
 
 import requests
 from bs4 import BeautifulSoup
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from flask import Flask  # для веб-сервера
+from flask import Flask
 import threading
 
 # ===== КОНФИГУРАЦИЯ =====
@@ -20,7 +20,7 @@ FACULTY = "1012"
 COURSE = "1"
 GROUP = "ТП-1-11"
 
-# ===== ФУНКЦИЯ ПАРСИНГА =====
+# ===== УЛУЧШЕННАЯ ФУНКЦИЯ ПАРСИНГА =====
 def get_schedule_for_date(date_str: str) -> list:
     url = "https://nmu.nuft.edu.ua/timetable.cgi?n=700"
     payload = {
@@ -43,71 +43,88 @@ def get_schedule_for_date(date_str: str) -> list:
         print(f"Ошибка запроса: {e}")
         return None
 
+    # Для отладки выведем первые 500 символов ответа в лог
+    print(f"Ответ сайта (первые 500 символов): {resp.text[:500]}")
+
     soup = BeautifulSoup(resp.text, 'html.parser')
-    day_blocks = soup.find_all('div', class_='col-md-6')
     schedule = []
-    for block in day_blocks:
-        h4 = block.find('h4')
-        if h4 and date_str in h4.get_text():
-            table = block.find('table')
-            if not table:
+
+    # Ищем все блоки, которые содержат таблицу с расписанием
+    # Обычно это div с классом col-md-6, но на всякий случай ищем все таблицы
+    tables = soup.find_all('table', class_='table')
+    for table in tables:
+        # Проверяем, есть ли рядом заголовок с нашей датой
+        parent = table.find_parent()
+        # Ищем заголовок h4, содержащий нашу дату, в родительских элементах
+        header = None
+        for ancestor in table.parents:
+            h4 = ancestor.find('h4')
+            if h4 and date_str in h4.get_text():
+                header = h4
+                break
+        if not header:
+            continue
+
+        rows = table.find_all('tr')
+        for row in rows:
+            tds = row.find_all('td')
+            if len(tds) < 3:
                 continue
-            rows = table.find_all('tr')
-            for row in rows:
-                tds = row.find_all('td')
-                if len(tds) < 3:
+            content_cell = tds[2]
+            if content_cell.get_text(strip=True) == '':
+                continue
+
+            num = tds[0].get_text(strip=True)
+            time_raw = tds[1].get_text(strip=True).replace('\n', ' - ')
+
+            zoom_link = None
+            link_tag = content_cell.find('a', href=True)
+            if link_tag:
+                zoom_link = link_tag['href']
+
+            # Извлекаем предмет и преподавателя
+            # Удаляем все <br> и получаем текст
+            for br in content_cell.find_all('br'):
+                br.replace_with('\n')
+            text = content_cell.get_text(separator='\n')
+            lines = [line.strip() for line in text.split('\n') if line.strip()]
+
+            subject = ''
+            teacher = ''
+            for line in lines:
+                if 'онлайн' in line or 'очно' in line:
                     continue
-                content_cell = tds[2]
-                if content_cell.get_text(strip=True) == '':
+                if 'відеоконференсія' in line:
                     continue
-
-                num = tds[0].get_text(strip=True)
-                time_raw = tds[1].get_text(strip=True).replace('\n', ' - ')
-
-                zoom_link = None
-                link_tag = content_cell.find('a', href=True)
-                if link_tag:
-                    zoom_link = link_tag['href']
-
-                for br in content_cell.find_all('br'):
-                    br.replace_with('\n')
-                text = content_cell.get_text(separator='\n')
-                lines = [line.strip() for line in text.split('\n') if line.strip()]
-
-                subject = ''
-                teacher = ''
-                for line in lines:
-                    if 'онлайн' in line or 'очно' in line:
-                        continue
-                    if 'відеоконференсія' in line:
-                        continue
-                    if 'https://' in line or 'http://' in line:
-                        continue
-                    if not subject:
-                        subject = line
+                if 'https://' in line or 'http://' in line:
+                    continue
+                if not subject:
+                    subject = line
+                else:
+                    if teacher:
+                        teacher += ', ' + line
                     else:
-                        if teacher:
-                            teacher += ', ' + line
-                        else:
-                            teacher = line
+                        teacher = line
 
-                if not subject and lines:
-                    subject = lines[0] if len(lines) > 0 else ''
-                if not teacher and len(lines) > 1:
-                    teacher = lines[1] if len(lines) > 1 else ''
+            # Если не удалось выделить, берём первую строку как предмет
+            if not subject and lines:
+                subject = lines[0]
+            if not teacher and len(lines) > 1:
+                teacher = lines[1]
 
-                schedule.append({
-                    'num': num,
-                    'time': time_raw,
-                    'subject': subject,
-                    'teacher': teacher,
-                    'zoom': zoom_link
-                })
-            break
+            schedule.append({
+                'num': num,
+                'time': time_raw,
+                'subject': subject,
+                'teacher': teacher,
+                'zoom': zoom_link
+            })
+        break  # берём только первую найденную таблицу с этой датой
 
+    print(f"Найдено пар: {len(schedule)}")
     return schedule if schedule else None
 
-# ===== ФОРМИРОВАНИЕ СООБЩЕНИЯ =====
+# ===== ФОРМИРОВАНИЕ СООБЩЕНИЯ (без изменений) =====
 def format_schedule(schedule: list, date_str: str) -> str:
     if not schedule:
         return f"📅 На {date_str} занятий нет или расписание не найдено."
@@ -144,7 +161,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def tomorrow_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    # Используем Киевское время
     kyiv_tz = pytz.timezone('Europe/Kiev')
     tomorrow = (datetime.now(kyiv_tz) + timedelta(days=1)).strftime("%d.%m.%Y")
     schedule = get_schedule_for_date(tomorrow)
@@ -159,7 +175,7 @@ async def send_daily_schedule(app: Application):
     text = format_schedule(schedule, tomorrow)
     await app.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ===== ВЕБ-СЕРВЕР ДЛЯ RENDER (чтобы был порт) =====
+# ===== ВЕБ-СЕРВЕР ДЛЯ RENDER =====
 app_web = Flask(__name__)
 
 @app_web.route('/')
@@ -171,12 +187,10 @@ def run_web():
 
 # ===== ЗАПУСК БОТА =====
 def main():
-    # Запускаем веб-сервер в отдельном потоке
     thread = threading.Thread(target=run_web)
     thread.daemon = True
     thread.start()
 
-    # Запускаем Telegram-бота
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
