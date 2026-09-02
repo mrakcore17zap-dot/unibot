@@ -12,7 +12,7 @@ from flask import Flask
 import threading
 
 # ===== КОНФИГУРАЦИЯ =====
-TOKEN = os.getenv("TELEGRAM_TOKEN", "8825040548:AAEzOeCHQT1zHFFPm8lixSd0C8Dwf2QMeI4")
+TOKEN = os.getenv("TELEGRAM_TOKEN", "8778485093:AAEwSgzfZP4HbXZ2eUfoTvKEvBgdw7mhe9A")
 YOUR_CHAT_ID = 1356969534
 
 FACULTY = "1012"
