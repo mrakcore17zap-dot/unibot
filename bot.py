@@ -1,4 +1,5 @@
 import os
+import threading
 import requests
 from datetime import datetime, timedelta
 import pytz
@@ -6,6 +7,7 @@ from bs4 import BeautifulSoup
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from flask import Flask
 
 # ===== КОНФИГУРАЦИЯ =====
 TOKEN = "8825040548:AAEzOeCHQT1zHFFPm8lixSd0C8Dwf2QMeI4"
@@ -15,7 +17,7 @@ FACULTY = "1012"
 COURSE = "1"
 GROUP = "ТП-1-11"
 
-# ===== ПАРСИНГ (проверен на твоём HTML) =====
+# ===== ПАРСИНГ =====
 def get_schedule_for_date(date_str: str) -> list:
     url = "https://nmu.nuft.edu.ua/timetable.cgi?n=700"
     payload = {
@@ -134,12 +136,28 @@ async def send_daily_schedule(app: Application):
     text = format_schedule(schedule, tomorrow)
     await app.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
+# ===== FLASK ДЛЯ HEALTHCHECK =====
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def health():
+    return "Bot is running!"
+
+def run_flask():
+    flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False)
+
 # ===== ЗАПУСК =====
 def main():
-    # Удаляем все webhook, чтобы избежать конфликтов
+    # Удаляем webhook, чтобы избежать конфликтов
     requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
     print("Webhook удалён")
 
+    # Запускаем Flask в отдельном потоке
+    thread = threading.Thread(target=run_flask)
+    thread.daemon = True
+    thread.start()
+
+    # Создаём приложение Telegram
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
