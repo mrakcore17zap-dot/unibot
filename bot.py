@@ -11,7 +11,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-TOKEN = "8717215414:AAE_EDp-Z240EgXE8KlchuaTciWmbdiCqqw"  # вставь свой токен
+TOKEN = "8789381004:AAEKiy2zoCH3526ekd_9015wqxAFTHw1XbY"  # вставь свой токен
 YOUR_CHAT_ID = 7191243741
 
 FACULTY = "1012"
