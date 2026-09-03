@@ -1,25 +1,25 @@
 import os
 import re
+import requests
 from datetime import datetime, timedelta
 import pytz
-import requests
 from bs4 import BeautifulSoup
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from apscheduler.schedulers.background import BackgroundScheduler
 import threading
+import asyncio
 
 # ===== КОНФИГУРАЦИЯ =====
-TOKEN = os.getenv("TELEGRAM_TOKEN", "8778485093:AAEwSgzfZP4HbXZ2eUfoTvKEvBgdw7mhe9A")
+TOKEN = "8825040548:AAEzOeCHQT1zHFFPm8lixSd0C8Dwf2QMeI4"  # твой токен
 YOUR_CHAT_ID = 1356969534
+
 FACULTY = "1012"
 COURSE = "1"
 GROUP = "ТП-1-11"
 
-# URL твоего бота на Render (измени, если имя другое)
-RENDER_URL = "https://unibot-85cq.onrender.com"
-
-# ===== ПАРСИНГ (исправленный) =====
+# ===== ПАРСИНГ =====
 def get_schedule_for_date(date_str: str) -> list:
     url = "https://nmu.nuft.edu.ua/timetable.cgi?n=700"
     payload = {
@@ -110,7 +110,12 @@ def format_schedule(schedule: list, date_str: str) -> str:
         text += "\n"
     return text
 
-# ===== ОБРАБОТЧИКИ =====
+# ===== СОЗДАЕМ APPLICATION (однократно) =====
+app = Application.builder().token(TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
+
+# ===== ОБРАБОТЧИКИ КОМАНД =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("📚 Расписание на завтра", callback_data="tomorrow")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -131,26 +136,14 @@ async def tomorrow_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = format_schedule(schedule, tomorrow)
     await query.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ===== АВТОНАПОМИНАНИЕ (используем asyncio) =====
-async def send_daily_schedule(app: Application):
+async def send_daily_schedule():
     kyiv_tz = pytz.timezone('Europe/Kiev')
     tomorrow = (datetime.now(kyiv_tz) + timedelta(days=1)).strftime("%d.%m.%Y")
     schedule = get_schedule_for_date(tomorrow)
     text = format_schedule(schedule, tomorrow)
     await app.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ===== НАСТРОЙКА WEBHOOK =====
-app = Application.builder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
-
-# Планировщик для автоуведомлений
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-scheduler = AsyncIOScheduler()
-scheduler.add_job(send_daily_schedule, "cron", hour=20, minute=0, args=[app])
-scheduler.start()
-
-# ===== FLASK ДЛЯ ПРИЁМА WEBHOOK =====
+# ===== FLASK (синхронный) =====
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -158,26 +151,44 @@ def health():
     return "Bot is running!"
 
 @flask_app.route('/webhook', methods=['POST'])
-async def webhook():
-    """Принимаем обновления от Telegram"""
-    json_data = request.get_json(force=True)
-    update = Update.de_json(json_data, app.bot)
-    await app.process_update(update)
-    return "ok"
+def webhook():
+    """Синхронный обработчик POST-запросов от Telegram"""
+    try:
+        json_data = request.get_json(force=True)
+        update = Update.de_json(json_data, app.bot)
+        # Запускаем обработку асинхронно в отдельном потоке
+        threading.Thread(target=run_async, args=(update,)).start()
+        return "ok", 200
+    except Exception as e:
+        print(f"Ошибка в webhook: {e}")
+        return "error", 500
+
+def run_async(update):
+    """Запускает асинхронную обработку в синхронном контексте"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(app.process_update(update))
+    finally:
+        loop.close()
 
 @flask_app.route('/set_webhook', methods=['GET'])
 def set_webhook():
-    """Устанавливаем webhook (вызови один раз вручную)"""
-    webhook_url = f"{RENDER_URL}/webhook"
+    """Устанавливает webhook (можно вызвать вручную)"""
+    webhook_url = "https://unibot-85cq.onrender.com/webhook"
     response = requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
-    return response.json()
+    return jsonify(response.json())
+
+# ===== ПЛАНИРОВЩИК =====
+scheduler = BackgroundScheduler()
+scheduler.add_job(send_daily_schedule, 'cron', hour=20, minute=0)
+scheduler.start()
 
 # ===== ЗАПУСК =====
 if __name__ == "__main__":
-    # Удаляем старый webhook (на всякий случай)
+    # Удаляем старый webhook и ставим новый
     requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
-    # Устанавливаем новый webhook
-    webhook_url = f"{RENDER_URL}/webhook"
+    webhook_url = "https://unibot-85cq.onrender.com/webhook"
     requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
     print(f"Webhook установлен на {webhook_url}")
     # Запускаем Flask
