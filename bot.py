@@ -10,9 +10,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ===== КОНФИГУРАЦИЯ =====
-TOKEN = "8450580732:AAERv4obqXTByoQL1hsMOFA9bTnzco-d7gw"  # <-- вставь новый токен от @BotFather
-YOUR_CHAT_ID = 7191243741  # не меняй
+# ===== НОВЫЙ ТОКЕН (ВСТАВЬ СЮДА) =====
+TOKEN = "8717215414:AAE_EDp-Z240EgXE8KlchuaTciWmbdiCqqw"
+YOUR_CHAT_ID = 7191243741
 
 FACULTY = "1012"
 COURSE = "1"
@@ -38,8 +38,8 @@ def get_schedule_for_date(date_str: str) -> list:
         resp = requests.post(url, data=payload, headers=headers, timeout=15)
         resp.encoding = 'windows-1251'
     except Exception as e:
-        print(f"[ПАРСИНГ] Ошибка запроса: {e}")
-        return None
+        print(f"[ОШИБКА] {e}")
+        return []
 
     soup = BeautifulSoup(resp.text, 'html.parser')
     day_blocks = soup.find_all('div', class_='col-md-6')
@@ -53,9 +53,7 @@ def get_schedule_for_date(date_str: str) -> list:
             rows = table.find_all('tr')
             for row in rows:
                 tds = row.find_all('td')
-                if len(tds) < 3:
-                    continue
-                if not tds[2].get_text(strip=True):
+                if len(tds) < 3 or not tds[2].get_text(strip=True):
                     continue
                 num = tds[0].get_text(strip=True)
                 time_raw = tds[1].get_text(strip=True).replace('\n', ' - ')
@@ -68,7 +66,7 @@ def get_schedule_for_date(date_str: str) -> list:
                 subject = ''
                 teacher = ''
                 for line in lines:
-                    if 'онлайн' in line or 'очно' in line or 'відеоконференсія' in line or 'https://' in line:
+                    if any(x in line for x in ['онлайн', 'очно', 'відеоконференсія', 'https://']):
                         continue
                     if not subject:
                         subject = line
@@ -87,7 +85,7 @@ def get_schedule_for_date(date_str: str) -> list:
                 })
             break
     print(f"[ПАРСИНГ] Найдено пар: {len(schedule)}")
-    return schedule if schedule else []
+    return schedule
 
 def format_schedule(schedule: list, date_str: str) -> str:
     if not schedule:
@@ -115,8 +113,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         "👋 Привет! Я твой бот-расписание.\n"
-        "Нажми кнопку ниже, чтобы узнать расписание на завтра.\n\n"
-        "Каждый вечер в 20:00 я буду присылать расписание автоматически.",
+        "Нажми кнопку, чтобы узнать расписание на завтра.\n\n"
+        "Каждый вечер в 20:00 я буду присылать расписание.",
         reply_markup=reply_markup
     )
 
@@ -137,7 +135,7 @@ async def send_daily_schedule(app: Application):
     text = format_schedule(schedule, tomorrow)
     await app.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ===== FLASK ДЛЯ HEALTHCHECK =====
+# ===== FLASK ДЛЯ RENDER (чтобы не ругался на порт) =====
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -149,20 +147,16 @@ def run_flask():
 
 # ===== ЗАПУСК =====
 def main():
-    # Удаляем webhook, чтобы избежать конфликтов
     try:
         requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
-        print("Webhook удалён")
-    except Exception as e:
-        print(f"Ошибка удаления webhook: {e}")
+    except:
+        pass
     time.sleep(1)
 
-    # Запускаем Flask в отдельном потоке
     thread = threading.Thread(target=run_flask)
     thread.daemon = True
     thread.start()
 
-    # Создаём приложение Telegram
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
