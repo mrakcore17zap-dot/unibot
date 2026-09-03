@@ -10,110 +10,44 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ===== КОНФИГУРАЦИЯ =====
-TOKEN = "8717215414:AAE_EDp-Z240EgXE8KlchuaTciWmbdiCqqw"  # вставь сюда свой токен
+TOKEN = "8717215414:AAE_EDp-Z240EgXE8KlchuaTciWmbdiCqqw"  # вставь свой токен
 YOUR_CHAT_ID = 7191243741
 
 FACULTY = "1012"
 COURSE = "1"
 GROUP = "ТП-1-11"
 
-# ===== ПАРСИНГ С ОТЛАДКОЙ =====
+# ===== ТЕСТОВАЯ ВЕРСИЯ ПАРСИНГА =====
 def get_schedule_for_date(date_str: str) -> list:
-    url = "https://nmu.nuft.edu.ua/timetable.cgi?n=700"
-    payload = {
-        'faculty': FACULTY,
-        'course': COURSE,
-        'group': GROUP,
-        'sdate': date_str,
-        'edate': date_str,
-        'n': '700'
-    }
-    headers = {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
+    # Вместо реального парсинга возвращаем тестовые данные
+    print(f"[ТЕСТ] Запрос для даты {date_str}")
+    return [
+        {
+            'num': '1',
+            'time': '08:15 - 09:35',
+            'subject': 'Тестовый предмет',
+            'teacher': 'Тестовый преподаватель',
+            'zoom': 'https://zoom.us/test'
+        },
+        {
+            'num': '2',
+            'time': '09:50 - 11:10',
+            'subject': 'Ещё тест',
+            'teacher': 'Другой преподаватель',
+            'zoom': None
+        }
+    ]
 
-    try:
-        resp = requests.post(url, data=payload, headers=headers, timeout=15)
-        resp.encoding = 'windows-1251'
-    except Exception as e:
-        print(f"[ПАРСИНГ] Ошибка запроса: {e}")
-        return []
-
-    # Выводим первые 500 символов для отладки
-    print(f"[ПАРСИНГ] Ответ сайта (первые 500 символов):\n{resp.text[:500]}")
-
-    soup = BeautifulSoup(resp.text, 'html.parser')
-    schedule = []
-
-    # Ищем все блоки col-md-6
-    day_blocks = soup.find_all('div', class_='col-md-6')
-    print(f"[ПАРСИНГ] Найдено блоков col-md-6: {len(day_blocks)}")
-
-    for block in day_blocks:
-        h4 = block.find('h4')
-        if h4 and date_str in h4.get_text():
-            print(f"[ПАРСИНГ] Найден заголовок с датой: {h4.get_text().strip()}")
-            table = block.find('table', class_='table')
-            if not table:
-                print("[ПАРСИНГ] Таблица не найдена в блоке")
-                continue
-
-            rows = table.find_all('tr')
-            print(f"[ПАРСИНГ] Найдено строк в таблице: {len(rows)}")
-            for row in rows:
-                tds = row.find_all('td')
-                if len(tds) < 3:
-                    continue
-                if not tds[2].get_text(strip=True):
-                    continue
-                num = tds[0].get_text(strip=True)
-                time_raw = tds[1].get_text(strip=True).replace('\n', ' - ')
-                zoom_link = None
-                link_tag = tds[2].find('a', href=True)
-                if link_tag:
-                    zoom_link = link_tag['href']
-                cell_text = tds[2].get_text(separator='\n').strip()
-                lines = [line.strip() for line in cell_text.split('\n') if line.strip()]
-                subject = ''
-                teacher = ''
-                for line in lines:
-                    if any(x in line for x in ['онлайн', 'очно', 'відеоконференсія', 'https://']):
-                        continue
-                    if not subject:
-                        subject = line
-                    else:
-                        teacher = line if not teacher else teacher + ', ' + line
-                if not subject and lines:
-                    subject = lines[0]
-                if not teacher and len(lines) > 1:
-                    teacher = lines[1]
-                schedule.append({
-                    'num': num,
-                    'time': time_raw,
-                    'subject': subject,
-                    'teacher': teacher,
-                    'zoom': zoom_link
-                })
-            break
-    else:
-        print(f"[ПАРСИНГ] Блок с датой {date_str} не найден")
-
-    print(f"[ПАРСИНГ] Найдено пар: {len(schedule)}")
-    return schedule
-
-# ===== ОСТАЛЬНОЙ КОД (без изменений) =====
 def format_schedule(schedule: list, date_str: str) -> str:
     if not schedule:
-        return f"📅 На {date_str} занятий нет или расписание не найдено."
+        return f"📅 На {date_str} занятий нет."
     try:
         dt = datetime.strptime(date_str, "%d.%m.%Y")
         weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
         dow = weekdays[dt.weekday()]
     except:
         dow = ""
-    text = f"📅 *{date_str} ({dow})*\n\n"
+    text = f"📅 *{date_str} ({dow})* (ТЕСТ)\n\n"
     for item in schedule:
         text += f"🔹 *{item['num']} пара*  ({item['time']})\n"
         text += f"📖 {item['subject']}\n"
@@ -128,16 +62,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("📚 Расписание на завтра", callback_data="tomorrow")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "👋 Привет! Я твой бот-расписание.\n"
-        "Нажми кнопку, чтобы узнать расписание на завтра.\n\n"
-        "Каждый вечер в 20:00 я буду присылать расписание.",
+        "👋 Привет! Это тестовая версия.\n"
+        "Нажми кнопку, чтобы получить тестовое расписание.",
         reply_markup=reply_markup
     )
 
 async def tomorrow_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.message.reply_text("⏳ Загружаю расписание...")
+    await query.message.reply_text("⏳ Генерирую тестовое расписание...")
     kyiv_tz = pytz.timezone('Europe/Kiev')
     tomorrow = (datetime.now(kyiv_tz) + timedelta(days=1)).strftime("%d.%m.%Y")
     schedule = get_schedule_for_date(tomorrow)
@@ -151,7 +84,6 @@ async def send_daily_schedule(app: Application):
     text = format_schedule(schedule, tomorrow)
     await app.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ===== FLASK =====
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -161,7 +93,6 @@ def health():
 def run_flask():
     flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False)
 
-# ===== ЗАПУСК =====
 def main():
     try:
         requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
@@ -181,7 +112,7 @@ def main():
     scheduler.add_job(send_daily_schedule, "cron", hour=20, minute=0, args=[app])
     scheduler.start()
 
-    print("Бот запущен...")
+    print("Бот запущен (тестовая версия)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
