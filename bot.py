@@ -1,5 +1,7 @@
 import os
 import re
+import threading
+import asyncio
 import requests
 from datetime import datetime, timedelta
 import pytz
@@ -8,11 +10,9 @@ from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.background import BackgroundScheduler
-import threading
-import asyncio
 
 # ===== КОНФИГУРАЦИЯ =====
-TOKEN = "8825040548:AAEzOeCHQT1zHFFPm8lixSd0C8Dwf2QMeI4"  # твой токен
+TOKEN = "8825040548:AAEzOeCHQT1zHFFPm8lixSd0C8Dwf2QMeI4"
 YOUR_CHAT_ID = 1356969534
 
 FACULTY = "1012"
@@ -110,11 +110,6 @@ def format_schedule(schedule: list, date_str: str) -> str:
         text += "\n"
     return text
 
-# ===== СОЗДАЕМ APPLICATION (однократно) =====
-app = Application.builder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
-
 # ===== ОБРАБОТЧИКИ КОМАНД =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("📚 Расписание на завтра", callback_data="tomorrow")]]
@@ -143,6 +138,11 @@ async def send_daily_schedule():
     text = format_schedule(schedule, tomorrow)
     await app.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
+# ===== СОЗДАЕМ APPLICATION ПОСЛЕ ОПРЕДЕЛЕНИЯ ВСЕХ ФУНКЦИЙ =====
+app = Application.builder().token(TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
+
 # ===== FLASK (синхронный) =====
 flask_app = Flask(__name__)
 
@@ -152,11 +152,9 @@ def health():
 
 @flask_app.route('/webhook', methods=['POST'])
 def webhook():
-    """Синхронный обработчик POST-запросов от Telegram"""
     try:
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, app.bot)
-        # Запускаем обработку асинхронно в отдельном потоке
         threading.Thread(target=run_async, args=(update,)).start()
         return "ok", 200
     except Exception as e:
@@ -164,7 +162,6 @@ def webhook():
         return "error", 500
 
 def run_async(update):
-    """Запускает асинхронную обработку в синхронном контексте"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -174,7 +171,6 @@ def run_async(update):
 
 @flask_app.route('/set_webhook', methods=['GET'])
 def set_webhook():
-    """Устанавливает webhook (можно вызвать вручную)"""
     webhook_url = "https://unibot-85cq.onrender.com/webhook"
     response = requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
     return jsonify(response.json())
@@ -186,10 +182,8 @@ scheduler.start()
 
 # ===== ЗАПУСК =====
 if __name__ == "__main__":
-    # Удаляем старый webhook и ставим новый
     requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
     webhook_url = "https://unibot-85cq.onrender.com/webhook"
     requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
     print(f"Webhook установлен на {webhook_url}")
-    # Запускаем Flask
     flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
