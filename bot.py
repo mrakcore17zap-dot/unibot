@@ -1,19 +1,16 @@
 import os
-import threading
+import time
 import requests
-import json
 from datetime import datetime, timedelta
 import pytz
 from bs4 import BeautifulSoup
-from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ===== КОНФИГУРАЦИЯ =====
-TOKEN = "8982733679:AAE8sgEtukDcS_QZaPReA0X4dYQlNxByNI4"  # <-- вставь новый токен от @BotFather
+TOKEN = "8450580732:AAERv4obqXTByoQL1hsMOFA9bTnzco-d7gw"  # <-- вставь новый токен от @BotFather
 YOUR_CHAT_ID = 7191243741  # не меняй
-RENDER_URL = "https://unibot-85cq.onrender.com"  # твой URL на Render
 
 FACULTY = "1012"
 COURSE = "1"
@@ -131,66 +128,35 @@ async def tomorrow_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = format_schedule(schedule, tomorrow)
     await query.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
 
-async def send_daily_schedule():
+async def send_daily_schedule(app: Application):
     kyiv_tz = pytz.timezone('Europe/Kiev')
     tomorrow = (datetime.now(kyiv_tz) + timedelta(days=1)).strftime("%d.%m.%Y")
     schedule = get_schedule_for_date(tomorrow)
     text = format_schedule(schedule, tomorrow)
-    # Здесь нужно использовать app.bot, но app будет доступна глобально
     await app.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ===== СОЗДАЁМ ПРИЛОЖЕНИЕ =====
-app = Application.builder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
-
-# ===== ПЛАНИРОВЩИК =====
-scheduler = BackgroundScheduler()
-scheduler.add_job(send_daily_schedule, 'cron', hour=20, minute=0)
-scheduler.start()
-
-# ===== FLASK =====
-flask_app = Flask(__name__)
-
-@flask_app.route('/')
-def health():
-    return "Bot is running!"
-
-@flask_app.route('/webhook', methods=['POST'])
-def webhook():
-    try:
-        json_data = request.get_json(force=True)
-        update = Update.de_json(json_data, app.bot)
-        # Запускаем обработку в фоновом потоке, чтобы не блокировать Flask
-        threading.Thread(target=process_update, args=(update,)).start()
-        return "ok", 200
-    except Exception as e:
-        print(f"Ошибка в webhook: {e}")
-        return "error", 500
-
-def process_update(update):
-    try:
-        # Используем asyncio для запуска асинхронной обработки
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(app.process_update(update))
-        loop.close()
-    except Exception as e:
-        print(f"Ошибка обработки: {e}")
-
-@flask_app.route('/set_webhook', methods=['GET'])
-def set_webhook():
-    webhook_url = f"{RENDER_URL}/webhook"
-    resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
-    return jsonify(resp.json())
-
 # ===== ЗАПУСК =====
+def main():
+    # Удаляем webhook и ждём
+    try:
+        requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
+        print("Webhook удалён")
+    except Exception as e:
+        print(f"Ошибка удаления webhook: {e}")
+    time.sleep(2)  # Ждём, чтобы Telegram обработал
+
+    # Создаём приложение
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(send_daily_schedule, "cron", hour=20, minute=0, args=[app])
+    scheduler.start()
+
+    print("Бот запущен...")
+    # Запускаем polling с очисткой очереди
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
 if __name__ == "__main__":
-    # Удаляем старый webhook и устанавливаем новый
-    requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
-    webhook_url = f"{RENDER_URL}/webhook"
-    resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
-    print(f"Webhook установлен: {resp.json()}")
-    # Запускаем Flask
-    flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False)
+    main()
