@@ -10,14 +10,13 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-TOKEN = "8717215414:AAE_EDp-Z240EgXE8KlchuaTciWmbdiCqqw"  # вставь свой работающий токен
+TOKEN = "8717215414:AAE_EDp-Z240EgXE8KlchuaTciWmbdiCqqw"
 YOUR_CHAT_ID = 7191243741
 
 FACULTY = "1012"
 COURSE = "1"
 GROUP = "ТП-1-11"
 
-# ===== РЕАЛЬНЫЙ ПАРСИНГ С ОТЛАДКОЙ =====
 def get_schedule_for_date(date_str: str) -> list:
     url = "https://nmu.nuft.edu.ua/timetable.cgi?n=700"
     payload = {
@@ -30,42 +29,44 @@ def get_schedule_for_date(date_str: str) -> list:
     }
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'uk-UA,uk;q=0.9,en;q=0.8',
     }
 
-    print(f"[ОТЛАДКА] Отправляем запрос на {url} с payload={payload}")
-
-    try:
-        resp = requests.post(url, data=payload, headers=headers, timeout=15)
-        resp.encoding = 'windows-1251'
-        print(f"[ОТЛАДКА] Статус ответа: {resp.status_code}")
-        print(f"[ОТЛАДКА] Первые 500 символов ответа:\n{resp.text[:500]}")
-    except Exception as e:
-        print(f"[ОТЛАДКА] Ошибка запроса: {e}")
+    for attempt in range(3):
+        try:
+            resp = requests.post(url, data=payload, headers=headers, timeout=15)
+            resp.encoding = 'windows-1251'
+            if resp.status_code == 521:
+                print(f"[ПАРСИНГ] Попытка {attempt+1}: сервер вернул 521, ждём 2 сек...")
+                time.sleep(2)
+                continue
+            if resp.status_code != 200:
+                print(f"[ПАРСИНГ] Неожиданный статус: {resp.status_code}")
+                return []
+            break
+        except Exception as e:
+            print(f"[ПАРСИНГ] Ошибка запроса: {e}")
+            time.sleep(2)
+            continue
+    else:
+        print("[ПАРСИНГ] Не удалось получить данные после 3 попыток")
         return []
 
     soup = BeautifulSoup(resp.text, 'html.parser')
     day_blocks = soup.find_all('div', class_='col-md-6')
-    print(f"[ОТЛАДКА] Найдено блоков col-md-6: {len(day_blocks)}")
-
     schedule = []
     for block in day_blocks:
         h4 = block.find('h4')
-        if h4:
-            print(f"[ОТЛАДКА] Заголовок блока: {h4.get_text().strip()}")
         if h4 and date_str in h4.get_text():
-            print(f"[ОТЛАДКА] Нашли блок с датой {date_str}")
             table = block.find('table', class_='table')
             if not table:
-                print("[ОТЛАДКА] Внутри блока нет таблицы")
                 continue
             rows = table.find_all('tr')
-            print(f"[ОТЛАДКА] В таблице {len(rows)} строк")
             for row in rows:
                 tds = row.find_all('td')
-                if len(tds) < 3:
-                    continue
-                if not tds[2].get_text(strip=True):
+                if len(tds) < 3 or not tds[2].get_text(strip=True):
                     continue
                 num = tds[0].get_text(strip=True)
                 time_raw = tds[1].get_text(strip=True).replace('\n', ' - ')
@@ -96,10 +97,6 @@ def get_schedule_for_date(date_str: str) -> list:
                     'zoom': zoom_link
                 })
             break
-    else:
-        print(f"[ОТЛАДКА] Блок с датой {date_str} не найден")
-
-    print(f"[ОТЛАДКА] Итоговое расписание: {schedule}")
     return schedule
 
 def format_schedule(schedule: list, date_str: str) -> str:
@@ -161,10 +158,9 @@ def run_flask():
 def main():
     try:
         requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
-        print("Webhook удалён")
     except:
         pass
-    time.sleep(1)
+    time.sleep(2)
 
     thread = threading.Thread(target=run_flask)
     thread.daemon = True
