@@ -2,6 +2,7 @@ import os
 import threading
 import time
 import requests
+import json
 from datetime import datetime, timedelta
 import pytz
 from bs4 import BeautifulSoup
@@ -10,13 +11,40 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-TOKEN = "8717215414:AAE_EDp-Z240EgXE8KlchuaTciWmbdiCqqw"
+TOKEN = "8717215414:AAE_EDp-Z240EgXE8KlchuaTciWmbdiCqqw"  # вставь свой токен
 YOUR_CHAT_ID = 7191243741
 
 FACULTY = "1012"
 COURSE = "1"
 GROUP = "ТП-1-11"
 
+CACHE_FILE = "schedule_cache.json"
+
+# ===== СОХРАНЕНИЕ/ЗАГРУЗКА КЕША =====
+def save_cache(date_str: str, schedule: list):
+    try:
+        data = {}
+        if os.path.exists(CACHE_FILE):
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        data[date_str] = schedule
+        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print(f"[КЕШ] Сохранено расписание на {date_str}")
+    except Exception as e:
+        print(f"[КЕШ] Ошибка сохранения: {e}")
+
+def load_cache(date_str: str) -> list:
+    try:
+        if os.path.exists(CACHE_FILE):
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data.get(date_str, [])
+    except Exception as e:
+        print(f"[КЕШ] Ошибка загрузки: {e}")
+    return []
+
+# ===== ПАРСИНГ С КЕШЕМ =====
 def get_schedule_for_date(date_str: str) -> list:
     url = "https://nmu.nuft.edu.ua/timetable.cgi?n=700"
     payload = {
@@ -29,30 +57,18 @@ def get_schedule_for_date(date_str: str) -> list:
     }
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'uk-UA,uk;q=0.9,en;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
 
-    for attempt in range(3):
-        try:
-            resp = requests.post(url, data=payload, headers=headers, timeout=15)
-            resp.encoding = 'windows-1251'
-            if resp.status_code == 521:
-                print(f"[ПАРСИНГ] Попытка {attempt+1}: сервер вернул 521, ждём 2 сек...")
-                time.sleep(2)
-                continue
-            if resp.status_code != 200:
-                print(f"[ПАРСИНГ] Неожиданный статус: {resp.status_code}")
-                return []
-            break
-        except Exception as e:
-            print(f"[ПАРСИНГ] Ошибка запроса: {e}")
-            time.sleep(2)
-            continue
-    else:
-        print("[ПАРСИНГ] Не удалось получить данные после 3 попыток")
-        return []
+    try:
+        resp = requests.post(url, data=payload, headers=headers, timeout=10)
+        resp.encoding = 'windows-1251'
+        if resp.status_code != 200:
+            print(f"[ОТЛАДКА] Сайт вернул статус {resp.status_code}, используем кеш")
+            return load_cache(date_str)
+    except Exception as e:
+        print(f"[ОТЛАДКА] Ошибка запроса: {e}, используем кеш")
+        return load_cache(date_str)
 
     soup = BeautifulSoup(resp.text, 'html.parser')
     day_blocks = soup.find_all('div', class_='col-md-6')
@@ -97,11 +113,22 @@ def get_schedule_for_date(date_str: str) -> list:
                     'zoom': zoom_link
                 })
             break
+
+    # Если расписание найдено — сохраняем в кеш
+    if schedule:
+        save_cache(date_str, schedule)
+    else:
+        # Если не найдено — пробуем загрузить из кеша
+        cached = load_cache(date_str)
+        if cached:
+            print(f"[КЕШ] Загружено из кеша на {date_str}")
+            return cached
+
     return schedule
 
 def format_schedule(schedule: list, date_str: str) -> str:
     if not schedule:
-        return f"📅 На {date_str} занятий нет или расписание не найдено."
+        return f"📅 На {date_str} занятий нет или расписание не найдено.\n\n_Сайт временно недоступен, данные могут быть неактуальны_"
     try:
         dt = datetime.strptime(date_str, "%d.%m.%Y")
         weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
@@ -125,7 +152,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я твой бот-расписание.\n"
         "Нажми кнопку, чтобы узнать расписание на завтра.\n\n"
-        "Каждый вечер в 20:00 я буду присылать расписание.",
+        "Если сайт с расписанием недоступен — покажу сохранённую версию.",
         reply_markup=reply_markup
     )
 
@@ -158,9 +185,10 @@ def run_flask():
 def main():
     try:
         requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
+        print("Webhook удалён")
     except:
         pass
-    time.sleep(2)
+    time.sleep(1)
 
     thread = threading.Thread(target=run_flask)
     thread.daemon = True
