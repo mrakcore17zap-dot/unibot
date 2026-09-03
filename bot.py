@@ -1,9 +1,11 @@
 import os
+import threading
 import time
 import requests
 from datetime import datetime, timedelta
 import pytz
 from bs4 import BeautifulSoup
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -135,17 +137,32 @@ async def send_daily_schedule(app: Application):
     text = format_schedule(schedule, tomorrow)
     await app.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
+# ===== FLASK ДЛЯ HEALTHCHECK =====
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def health():
+    return "Bot is running!"
+
+def run_flask():
+    flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False)
+
 # ===== ЗАПУСК =====
 def main():
-    # Удаляем webhook и ждём
+    # Удаляем webhook, чтобы избежать конфликтов
     try:
         requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
         print("Webhook удалён")
     except Exception as e:
         print(f"Ошибка удаления webhook: {e}")
-    time.sleep(2)  # Ждём, чтобы Telegram обработал
+    time.sleep(1)
 
-    # Создаём приложение
+    # Запускаем Flask в отдельном потоке
+    thread = threading.Thread(target=run_flask)
+    thread.daemon = True
+    thread.start()
+
+    # Создаём приложение Telegram
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(tomorrow_callback, pattern="tomorrow"))
@@ -155,7 +172,6 @@ def main():
     scheduler.start()
 
     print("Бот запущен...")
-    # Запускаем polling с очисткой очереди
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
