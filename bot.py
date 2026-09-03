@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 import requests
 from datetime import datetime, timedelta
 import pytz
@@ -10,8 +11,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from flask import Flask
 
 # ===== КОНФИГУРАЦИЯ =====
-TOKEN = "8825040548:AAEzOeCHQT1zHFFPm8lixSd0C8Dwf2QMeI4"
-YOUR_CHAT_ID = 7191243741
+TOKEN = "8982733679:AAE8sgEtukDcS_QZaPReA0X4dYQlNxByNI4"  # <-- ВСТАВЬ СВОЙ НОВЫЙ ТОКЕН
+YOUR_CHAT_ID = 7191243741  # не меняй
 
 FACULTY = "1012"
 COURSE = "1"
@@ -148,9 +149,11 @@ def run_flask():
 
 # ===== ЗАПУСК =====
 def main():
-    # Удаляем webhook, чтобы избежать конфликтов
+    # Удаляем webhook и сбрасываем очередь для нового токена
     requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
-    print("Webhook удалён")
+    time.sleep(1)
+    requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset=-1&limit=1")
+    print("Webhook удалён, очередь очищена")
 
     # Запускаем Flask в отдельном потоке
     thread = threading.Thread(target=run_flask)
