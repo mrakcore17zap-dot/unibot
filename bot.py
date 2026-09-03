@@ -10,15 +10,15 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ===== НОВЫЙ ТОКЕН (ВСТАВЬ СЮДА) =====
-TOKEN = "8717215414:AAE_EDp-Z240EgXE8KlchuaTciWmbdiCqqw"
+# ===== КОНФИГУРАЦИЯ =====
+TOKEN = "8717215414:AAE_EDp-Z240EgXE8KlchuaTciWmbdiCqqw"  # вставь сюда свой токен
 YOUR_CHAT_ID = 7191243741
 
 FACULTY = "1012"
 COURSE = "1"
 GROUP = "ТП-1-11"
 
-# ===== ПАРСИНГ =====
+# ===== ПАРСИНГ С ОТЛАДКОЙ =====
 def get_schedule_for_date(date_str: str) -> list:
     url = "https://nmu.nuft.edu.ua/timetable.cgi?n=700"
     payload = {
@@ -38,22 +38,35 @@ def get_schedule_for_date(date_str: str) -> list:
         resp = requests.post(url, data=payload, headers=headers, timeout=15)
         resp.encoding = 'windows-1251'
     except Exception as e:
-        print(f"[ОШИБКА] {e}")
+        print(f"[ПАРСИНГ] Ошибка запроса: {e}")
         return []
 
+    # Выводим первые 500 символов для отладки
+    print(f"[ПАРСИНГ] Ответ сайта (первые 500 символов):\n{resp.text[:500]}")
+
     soup = BeautifulSoup(resp.text, 'html.parser')
-    day_blocks = soup.find_all('div', class_='col-md-6')
     schedule = []
+
+    # Ищем все блоки col-md-6
+    day_blocks = soup.find_all('div', class_='col-md-6')
+    print(f"[ПАРСИНГ] Найдено блоков col-md-6: {len(day_blocks)}")
+
     for block in day_blocks:
         h4 = block.find('h4')
         if h4 and date_str in h4.get_text():
+            print(f"[ПАРСИНГ] Найден заголовок с датой: {h4.get_text().strip()}")
             table = block.find('table', class_='table')
             if not table:
+                print("[ПАРСИНГ] Таблица не найдена в блоке")
                 continue
+
             rows = table.find_all('tr')
+            print(f"[ПАРСИНГ] Найдено строк в таблице: {len(rows)}")
             for row in rows:
                 tds = row.find_all('td')
-                if len(tds) < 3 or not tds[2].get_text(strip=True):
+                if len(tds) < 3:
+                    continue
+                if not tds[2].get_text(strip=True):
                     continue
                 num = tds[0].get_text(strip=True)
                 time_raw = tds[1].get_text(strip=True).replace('\n', ' - ')
@@ -84,9 +97,13 @@ def get_schedule_for_date(date_str: str) -> list:
                     'zoom': zoom_link
                 })
             break
+    else:
+        print(f"[ПАРСИНГ] Блок с датой {date_str} не найден")
+
     print(f"[ПАРСИНГ] Найдено пар: {len(schedule)}")
     return schedule
 
+# ===== ОСТАЛЬНОЙ КОД (без изменений) =====
 def format_schedule(schedule: list, date_str: str) -> str:
     if not schedule:
         return f"📅 На {date_str} занятий нет или расписание не найдено."
@@ -107,7 +124,6 @@ def format_schedule(schedule: list, date_str: str) -> str:
         text += "\n"
     return text
 
-# ===== ОБРАБОТЧИКИ =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("📚 Расписание на завтра", callback_data="tomorrow")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -135,7 +151,7 @@ async def send_daily_schedule(app: Application):
     text = format_schedule(schedule, tomorrow)
     await app.bot.send_message(chat_id=YOUR_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
-# ===== FLASK ДЛЯ RENDER (чтобы не ругался на порт) =====
+# ===== FLASK =====
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
